@@ -82,5 +82,16 @@ export class BitunixAPI {
     );
     return response.data;
   }
+
+  async getOpenPositions(): Promise<BitunixResponse> {
+    return this.request('GET', '/api/v1/futures/position/get_pending_positions');
+  }
+
+  async modifySL(symbol: string, positionId: string, newSL: number): Promise<BitunixResponse> {
+    return this.request('POST', '/api/v1/futures/trade/modify_tpsl', {
+      symbol,
+      positionId,
+      stopLoss: newSL
+    });
+  }
 }
- 
