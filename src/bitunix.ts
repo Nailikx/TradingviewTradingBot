@@ -24,33 +24,28 @@ export class BitunixAPI {
     return crypto.createHash('sha256').update(signInput).digest('hex');
   }
 
-  async placeOrder(order: BitunixOrderRequest): Promise<BitunixResponse> {
-    const endpoint = '/api/v1/futures/trade/place_order';
+  private async request(method: 'GET' | 'POST', endpoint: string, body: any = {}): Promise<BitunixResponse> {
     const nonce = this.generateNonce();
     const timestamp = Date.now().toString();
-    const body = JSON.stringify(order);
+    const bodyStr = method === 'POST' ? JSON.stringify(body) : '';
+    const signature = this.generateSignature(nonce, timestamp, bodyStr);
 
-    const signature = this.generateSignature(nonce, timestamp, body);
+    const headers = {
+      'api-key': this.apiKey,
+      'nonce': nonce,
+      'timestamp': timestamp,
+      'sign': signature,
+      'Content-Type': 'application/json'
+    };
 
     try {
-      const response = await axios.post<BitunixResponse>(
-        `${this.baseUrl}${endpoint}`,
-        order,
-        {
-          headers: {
-            'api-key': this.apiKey,
-            'nonce': nonce,
-            'timestamp': timestamp,
-            'sign': signature,
-            'Content-Type': 'application/json'
-          }
-        }
-      );
+      const response = method === 'POST'
+        ? await axios.post<BitunixResponse>(`${this.baseUrl}${endpoint}`, body, { headers })
+        : await axios.get<BitunixResponse>(`${this.baseUrl}${endpoint}`, { headers });
 
       if (response.data.code !== 0) {
-            throw new Error(`Bitunix API error: ${response.data.msg} (code: ${response.data.code})`);
+        throw new Error(`Bitunix API error: ${response.data.msg} (code: ${response.data.code})`);
       }
-
       return response.data;
     } catch (error) {
       if (axios.isAxiosError(error) && error.response) {
@@ -58,5 +53,33 @@ export class BitunixAPI {
       }
       throw error;
     }
+  }
+
+  async placeOrder(order: BitunixOrderRequest): Promise<BitunixResponse> {
+    return this.request('POST', '/api/v1/futures/trade/place_order', order);
+  }
+
+  async getAccountInfo(): Promise<BitunixResponse> {
+    return this.request('GET', '/api/v1/futures/account');
+  }
+
+  async getTicker(symbol: string): Promise<BitunixResponse> {
+    const nonce = this.generateNonce();
+    const timestamp = Date.now().toString();
+    const signature = this.generateSignature(nonce, timestamp, '');
+
+    const response = await axios.get<BitunixResponse>(
+      `${this.baseUrl}/api/v1/futures/market/tickers?symbol=${symbol}`,
+      {
+        headers: {
+          'api-key': this.apiKey,
+          'nonce': nonce,
+          'timestamp': timestamp,
+          'sign': signature,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    return response.data;
   }
 }
