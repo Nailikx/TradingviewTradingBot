@@ -20,6 +20,7 @@ if (!TRADINGVIEW_TOKEN || !BITUNIX_API_KEY || !BITUNIX_API_SECRET) {
 
 const bitunix = new BitunixAPI(BITUNIX_API_KEY, BITUNIX_API_SECRET);
 const RISK_PERCENT = 0.03; // 3% risk per trade
+const LIMIT_BUFFER = 0.0005; // 0.05% buffer to guarantee fill
 
 app.post('/webhook', async (req, res) => {
   try {
@@ -40,42 +41,46 @@ app.post('/webhook', async (req, res) => {
 
     // Step 2: Get current price
     const ticker = await bitunix.getTicker(alert.symbol);
-    const entryPrice = parseFloat(ticker.data.lastPrice);
-    console.log(`Entry price: ${entryPrice}`);
+    const currentPrice = parseFloat(ticker.data.lastPrice);
+    console.log(`Current price: ${currentPrice}`);
 
-    // Step 3: Calculate position size so SL = exactly 3% of balance
-    // Risk Amount = 3% of balance
-    // SL Distance = |Entry - StopLoss|
-    // Quantity = Risk Amount / SL Distance
+    // Step 3: Calculate aggressive limit price to guarantee fill
+    // BUY → slightly above market | SELL → slightly below market
+    const limitPrice = alert.side === 'BUY'
+      ? parseFloat((currentPrice * (1 + LIMIT_BUFFER)).toFixed(2))
+      : parseFloat((currentPrice * (1 - LIMIT_BUFFER)).toFixed(2));
+    console.log(`Limit price: ${limitPrice}`);
+
+    // Step 4: Calculate position size so SL = exactly 3% of balance
     const riskAmount = usdtBalance * RISK_PERCENT;
-    const slDistance = Math.abs(entryPrice - alert.stopLoss);
+    const slDistance = Math.abs(currentPrice - alert.stopLoss);
 
     if (slDistance === 0) {
       return res.status(400).json({ error: 'Stop loss cannot equal entry price' });
     }
 
     const quantity = parseFloat((riskAmount / slDistance).toFixed(3));
-    
-    console.log(`Balance: $${usdtBalance} | Risk: $${riskAmount.toFixed(2)} | SL Distance: $${slDistance.toFixed(2)} | Qty: ${quantity}`);
+    console.log(`Risk: $${riskAmount.toFixed(2)} | SL Distance: $${slDistance.toFixed(2)} | Qty: ${quantity}`);
 
-    // Step 4: Place order
+    // Step 5: Place limit order (maker fee instead of taker fee)
     const order = await bitunix.placeOrder({
       symbol: alert.symbol,
       qty: quantity,
       side: alert.side,
       tradeSide: 'OPEN',
-      orderType: 'MARKET',
+      orderType: 'LIMIT',
+      price: limitPrice,
       stopLoss: alert.stopLoss,
       takeProfit: alert.takeProfit
     });
 
-    console.log(`✅ Order placed: ${order.data.orderId} | SL: ${alert.stopLoss} | TP: ${alert.takeProfit}`);
-    res.json({ 
-      status: 'Order placed', 
+    console.log(`✅ Order placed: ${order.data.orderId} | Price: ${limitPrice} | SL: ${alert.stopLoss} | TP: ${alert.takeProfit}`);
+    res.json({
+      status: 'Order placed',
       orderId: order.data.orderId,
       balance: usdtBalance,
       riskAmount: riskAmount.toFixed(2),
-      slDistance: slDistance.toFixed(2),
+      limitPrice,
       quantity
     });
 
