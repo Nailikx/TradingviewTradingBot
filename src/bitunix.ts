@@ -73,8 +73,12 @@ export class BitunixAPI {
       }
       return response.data;
     } catch (error) {
-      if (axios.isAxiosError(error) && error.response) {
-        throw new Error(`Bitunix API error: ${error.response.data.msg || error.message}`);
+      if (axios.isAxiosError(error)) {
+        console.log('Axios error code:', error.code);
+        console.log('Axios error message:', error.message);
+        console.log('Response status:', error.response?.status);
+        console.log('Response data:', JSON.stringify(error.response?.data));
+        throw new Error(`Bitunix API error: ${error.response?.data?.msg || error.message}`);
       }
       throw error;
     }
