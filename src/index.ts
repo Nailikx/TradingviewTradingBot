@@ -127,7 +127,6 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// Monitor open trades every 30 seconds for half SL
 setInterval(async () => {
   if (activeTrades.size === 0) return;
 
@@ -186,7 +185,3 @@ app.get('/health', (_, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-```
-
-Commit → wait for 🟢 green → then visit:
-```
