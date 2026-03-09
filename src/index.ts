@@ -91,8 +91,12 @@ app.post('/webhook', async (req, res) => {
       tradeSide: 'OPEN',
       orderType: 'LIMIT',
       price: limitPrice,
-      stopLoss: alert.stopLoss,
-      takeProfit: alert.takeProfit
+      tpPrice: alert.takeProfit,
+      tpStopType: 'MARK_PRICE',
+      tpOrderType: 'MARKET',
+      slPrice: alert.stopLoss,
+      slStopType: 'MARK_PRICE',
+      slOrderType: 'MARKET'
     });
 
     const positionId = order.data.orderId;
