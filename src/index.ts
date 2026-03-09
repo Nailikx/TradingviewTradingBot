@@ -63,6 +63,7 @@ app.post('/webhook', async (req, res) => {
     }
 
     const accountInfo = await bitunix.getAccountInfo();
+    console.log('Account info response:', JSON.stringify(accountInfo));
     const usdtBalance = parseFloat(accountInfo.data.available);
     console.log(`Balance: ${usdtBalance} USDT`);
 
