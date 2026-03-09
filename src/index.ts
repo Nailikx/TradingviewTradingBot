@@ -56,29 +56,24 @@ app.post('/webhook', async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    // Reject trades below minimum RR
     const MIN_RR = 0.5;
     if (alert.rr && alert.rr < MIN_RR) {
       console.log(`❌ Trade rejected — RR too low: ${alert.rr} (min ${MIN_RR})`);
       return res.status(200).json({ status: 'Trade skipped', reason: `RR ${alert.rr} below minimum ${MIN_RR}` });
     }
 
-    // Step 1: Get balance
     const accountInfo = await bitunix.getAccountInfo();
     const usdtBalance = parseFloat(accountInfo.data.available);
     console.log(`Balance: ${usdtBalance} USDT`);
 
-    // Step 2: Get current price
     const ticker = await bitunix.getTicker(alert.symbol);
     const currentPrice = parseFloat(ticker.data.lastPrice);
     console.log(`Current price: ${currentPrice}`);
 
-    // Step 3: Aggressive limit price
     const limitPrice = alert.side === 'BUY'
       ? parseFloat((currentPrice * (1 + LIMIT_BUFFER)).toFixed(2))
       : parseFloat((currentPrice * (1 - LIMIT_BUFFER)).toFixed(2));
 
-    // Step 4: Calculate position size — SL = exactly 3% of balance
     const riskAmount = usdtBalance * RISK_PERCENT;
     const slDistance = Math.abs(currentPrice - alert.stopLoss);
 
@@ -89,7 +84,6 @@ app.post('/webhook', async (req, res) => {
     const quantity = parseFloat((riskAmount / slDistance).toFixed(3));
     console.log(`Risk: $${riskAmount.toFixed(2)} | SL Distance: $${slDistance.toFixed(2)} | Qty: ${quantity}`);
 
-    // Step 5: Place limit order
     const order = await bitunix.placeOrder({
       symbol: alert.symbol,
       qty: quantity,
@@ -103,7 +97,6 @@ app.post('/webhook', async (req, res) => {
 
     const positionId = order.data.orderId;
 
-    // Step 6: Store trade for SL monitoring
     activeTrades.set(positionId, {
       symbol: alert.symbol,
       positionId,
@@ -177,6 +170,15 @@ setInterval(async () => {
   }
 }, 30000);
 
+app.get('/test', async (_, res) => {
+  try {
+    const ticker = await bitunix.getTicker('BTCUSDT');
+    res.json({ success: true, price: ticker.data.lastPrice });
+  } catch (error) {
+    res.json({ success: false, error: error instanceof Error ? error.message : 'Unknown' });
+  }
+});
+
 app.get('/health', (_, res) => {
   res.json({ status: 'ok' });
 });
@@ -184,3 +186,8 @@ app.get('/health', (_, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+```
+
+Commit → wait for 🟢 green → then visit:
+```
+https://tradingviewtradingbot-production.up.railway.app/test
