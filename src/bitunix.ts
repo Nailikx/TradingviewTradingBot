@@ -36,19 +36,18 @@ export class BitunixAPI {
     return crypto.randomBytes(16).toString('hex');
   }
 
-  private generateSignature(nonce: string, timestamp: string, body: string): string {
-    const queryParams = '';
+  private generateSignature(nonce: string, timestamp: string, queryParams: string, body: string): string {
     const digestInput = nonce + timestamp + this.apiKey + queryParams + body;
     const digest = crypto.createHash('sha256').update(digestInput).digest('hex');
     const signInput = digest + this.secretKey;
     return crypto.createHash('sha256').update(signInput).digest('hex');
   }
 
-  private async request(method: 'GET' | 'POST', endpoint: string, body: any = {}): Promise<BitunixResponse> {
+  private async request(method: 'GET' | 'POST', endpoint: string, body: any = {}, queryParams: string = ''): Promise<BitunixResponse> {
     const nonce = this.generateNonce();
     const timestamp = Date.now().toString();
     const bodyStr = method === 'POST' ? JSON.stringify(body) : '';
-    const signature = this.generateSignature(nonce, timestamp, bodyStr);
+    const signature = this.generateSignature(nonce, timestamp, queryParams, bodyStr);
 
     const headers = {
       'api-key': this.apiKey,
@@ -63,10 +62,14 @@ export class BitunixAPI {
       ...(this.proxyAgent && { httpsAgent: this.proxyAgent })
     };
 
+    const url = queryParams
+      ? `${this.baseUrl}${endpoint}?${queryParams}`
+      : `${this.baseUrl}${endpoint}`;
+
     try {
       const response = method === 'POST'
-        ? await axios.post<BitunixResponse>(`${this.baseUrl}${endpoint}`, body, config)
-        : await axios.get<BitunixResponse>(`${this.baseUrl}${endpoint}`, config);
+        ? await axios.post<BitunixResponse>(url, body, config)
+        : await axios.get<BitunixResponse>(url, config);
 
       if (response.data.code !== 0) {
         throw new Error(`Bitunix API error: ${response.data.msg} (code: ${response.data.code})`);
@@ -89,13 +92,14 @@ export class BitunixAPI {
   }
 
   async getAccountInfo(): Promise<BitunixResponse> {
-    return this.request('GET', '/api/v1/futures/account');
+    return this.request('GET', '/api/v1/futures/account', {}, 'marginCoin=USDT');
   }
 
   async getTicker(symbol: string): Promise<BitunixResponse> {
     const nonce = this.generateNonce();
     const timestamp = Date.now().toString();
-    const signature = this.generateSignature(nonce, timestamp, '');
+    const queryParams = `symbol=${symbol}`;
+    const signature = this.generateSignature(nonce, timestamp, queryParams, '');
 
     const config = {
       headers: {
@@ -109,7 +113,7 @@ export class BitunixAPI {
     };
 
     const response = await axios.get<BitunixResponse>(
-      `${this.baseUrl}/api/v1/futures/market/tickers?symbol=${symbol}`,
+      `${this.baseUrl}/api/v1/futures/market/tickers?${queryParams}`,
       config
     );
     return response.data;
