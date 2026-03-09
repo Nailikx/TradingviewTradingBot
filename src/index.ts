@@ -1,8 +1,9 @@
-import express from 'express';
 import dotenv from 'dotenv';
+dotenv.config();
+
+import express from 'express';
 import { BitunixAPI } from './bitunix';
 import { TradingViewAlert } from './types';
-dotenv.config();
 
 const app = express();
 app.use(express.json());
@@ -18,11 +19,18 @@ if (!TRADINGVIEW_TOKEN || !BITUNIX_API_KEY || !BITUNIX_API_SECRET) {
   throw new Error('Missing required environment variables');
 }
 
-const bitunix = new BitunixAPI(BITUNIX_API_KEY, BITUNIX_API_SECRET);
+const bitunix = new BitunixAPI(
+  BITUNIX_API_KEY,
+  BITUNIX_API_SECRET,
+  process.env.PROXY_HOST,
+  process.env.PROXY_PORT,
+  process.env.PROXY_USER,
+  process.env.PROXY_PASS
+);
+
 const RISK_PERCENT = 0.03;
 const LIMIT_BUFFER = 0.0005;
 
-// Store active trades for SL monitoring
 interface ActiveTrade {
   symbol: string;
   positionId: string;
@@ -46,6 +54,13 @@ app.post('/webhook', async (req, res) => {
 
     if (!alert.symbol || !alert.side || !alert.stopLoss || !alert.takeProfit) {
       return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // Reject trades below minimum RR
+    const MIN_RR = 0.5;
+    if (alert.rr && alert.rr < MIN_RR) {
+      console.log(`❌ Trade rejected — RR too low: ${alert.rr} (min ${MIN_RR})`);
+      return res.status(200).json({ status: 'Trade skipped', reason: `RR ${alert.rr} below minimum ${MIN_RR}` });
     }
 
     // Step 1: Get balance
@@ -130,38 +145,28 @@ setInterval(async () => {
     );
 
     for (const [positionId, trade] of activeTrades.entries()) {
-
-      // Remove closed trades
       if (!openPositionIds.has(positionId)) {
         console.log(`Trade ${positionId} closed — removing from monitor`);
         activeTrades.delete(positionId);
         continue;
       }
 
-      // Skip if half SL already triggered
       if (trade.halfSlTriggered) continue;
 
-      // Get current price
       const ticker = await bitunix.getTicker(trade.symbol);
       const currentPrice = parseFloat(ticker.data.lastPrice);
 
-      // Calculate 50% distance from entry to TP
       const totalDistance = Math.abs(trade.takeProfit - trade.entryPrice);
       const halfWay = trade.side === 'BUY'
         ? trade.entryPrice + totalDistance * 0.5
         : trade.entryPrice - totalDistance * 0.5;
 
-      // Check if price reached halfway to TP
       const halfWayReached = trade.side === 'BUY'
         ? currentPrice >= halfWay
         : currentPrice <= halfWay;
 
       if (halfWayReached) {
-        // Move SL to halfway between entry and original SL
-        const newSL = trade.side === 'BUY'
-          ? parseFloat(((trade.entryPrice + trade.originalSL) / 2).toFixed(2))
-          : parseFloat(((trade.entryPrice + trade.originalSL) / 2).toFixed(2));
-
+        const newSL = parseFloat(((trade.entryPrice + trade.originalSL) / 2).toFixed(2));
         await bitunix.modifySL(trade.symbol, positionId, newSL);
         trade.halfSlTriggered = true;
         console.log(`✅ Half SL triggered for ${positionId} | New SL: ${newSL}`);
@@ -170,7 +175,7 @@ setInterval(async () => {
   } catch (error) {
     console.error('Error in SL monitor:', error);
   }
-}, 30000); // every 30 seconds
+}, 30000);
 
 app.get('/health', (_, res) => {
   res.json({ status: 'ok' });
@@ -179,4 +184,3 @@ app.get('/health', (_, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
