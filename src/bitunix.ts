@@ -20,8 +20,6 @@ export class BitunixAPI {
     this.apiKey = apiKey;
     this.secretKey = secretKey;
 
-    console.log('PROXY DEBUG:', proxyHost, proxyPort, proxyUser, proxyPass ? 'pass-set' : 'no-pass');
-
     if (proxyHost && proxyPort && proxyUser && proxyPass) {
       const proxyUrl = `http://${proxyUser}:${proxyPass}@${proxyHost}:${proxyPort}`;
       this.proxyAgent = new HttpsProxyAgent(proxyUrl);
@@ -41,80 +39,45 @@ export class BitunixAPI {
     return result;
   }
 
-  private generateSignature(nonce: string, timestamp: string, queryParams: string, body: string): string {
-    const digestInput = nonce + timestamp + this.apiKey + queryParams + body;
+  // queryParams: plain key=value pairs e.g. {marginCoin: 'USDT'}
+  // They get sorted by key and concatenated as keyValue for signature
+  private buildQuerySignaturePart(params: Record<string, string>): string {
+    return Object.keys(params)
+      .sort()
+      .map(k => k + params[k])
+      .join('');
+  }
+
+  private generateSignature(nonce: string, timestamp: string, querySignaturePart: string, body: string): string {
+    const digestInput = nonce + timestamp + this.apiKey + querySignaturePart + body;
     const digest = crypto.createHash('sha256').update(digestInput).digest('hex');
     const signInput = digest + this.secretKey;
     return crypto.createHash('sha256').update(signInput).digest('hex');
   }
 
-  private async request(method: 'GET' | 'POST', endpoint: string, body: any = {}, queryParams: string = ''): Promise<BitunixResponse> {
-    const nonce = this.generateNonce();
-    const timestamp = Date.now().toString();
-    const bodyStr = method === 'POST' ? JSON.stringify(body) : '';
-    const signature = this.generateSignature(nonce, timestamp, queryParams, bodyStr);
-
-    const headers = {
-      'api-key': this.apiKey,
-      'nonce': nonce,
-      'timestamp': timestamp,
-      'sign': signature,
-      'Content-Type': 'application/json'
-    };
-
-    const config = {
-      headers,
+  private getConfig(nonce: string, timestamp: string, sign: string) {
+    return {
+      headers: {
+        'api-key': this.apiKey,
+        'nonce': nonce,
+        'timestamp': timestamp,
+        'sign': sign,
+        'Content-Type': 'application/json'
+      },
       ...(this.proxyAgent && { httpsAgent: this.proxyAgent })
     };
-
-    const url = queryParams
-      ? `${this.baseUrl}${endpoint}?${queryParams}`
-      : `${this.baseUrl}${endpoint}`;
-
-    try {
-      const response = method === 'POST'
-        ? await axios.post<BitunixResponse>(url, body, config)
-        : await axios.get<BitunixResponse>(url, config);
-
-      if (response.data.code !== 0) {
-        throw new Error(`Bitunix API error: ${response.data.msg} (code: ${response.data.code})`);
-      }
-      return response.data;
-    } catch (error) {
-      if (axios.isAxiosError(error)) {
-        console.log('Axios error code:', error.code);
-        console.log('Axios error message:', error.message);
-        console.log('Response status:', error.response?.status);
-        console.log('Response data:', JSON.stringify(error.response?.data));
-        throw new Error(`Bitunix API error: ${error.response?.data?.msg || error.message}`);
-      }
-      throw error;
-    }
-  }
-
-  async placeOrder(order: BitunixOrderRequest): Promise<BitunixResponse> {
-    return this.request('POST', '/api/v1/futures/trade/place_order', order);
   }
 
   async getAccountInfo(): Promise<BitunixResponse> {
     const nonce = this.generateNonce();
     const timestamp = Date.now().toString();
-    const queryParams = 'marginCoin=USDT';
-    const signature = this.generateSignature(nonce, timestamp, queryParams, '');
-
-    const config = {
-      headers: {
-        'api-key': this.apiKey,
-        'nonce': nonce,
-        'timestamp': timestamp,
-        'sign': signature,
-        'Content-Type': 'application/json'
-      },
-      ...(this.proxyAgent && { httpsAgent: this.proxyAgent })
-    };
+    const params = { marginCoin: 'USDT' };
+    const querySignaturePart = this.buildQuerySignaturePart(params);
+    const sign = this.generateSignature(nonce, timestamp, querySignaturePart, '');
+    const config = this.getConfig(nonce, timestamp, sign);
 
     const response = await axios.get<BitunixResponse>(
-      `${this.baseUrl}/api/v1/futures/account?${queryParams}`,
+      `${this.baseUrl}/api/v1/futures/account?marginCoin=USDT`,
       config
     );
     return response.data;
@@ -123,36 +86,67 @@ export class BitunixAPI {
   async getTicker(symbol: string): Promise<BitunixResponse> {
     const nonce = this.generateNonce();
     const timestamp = Date.now().toString();
-    const queryParams = `symbol=${symbol}`;
-    const signature = this.generateSignature(nonce, timestamp, queryParams, '');
-
-    const config = {
-      headers: {
-        'api-key': this.apiKey,
-        'nonce': nonce,
-        'timestamp': timestamp,
-        'sign': signature,
-        'Content-Type': 'application/json'
-      },
-      ...(this.proxyAgent && { httpsAgent: this.proxyAgent })
-    };
+    const params = { symbol };
+    const querySignaturePart = this.buildQuerySignaturePart(params);
+    const sign = this.generateSignature(nonce, timestamp, querySignaturePart, '');
+    const config = this.getConfig(nonce, timestamp, sign);
 
     const response = await axios.get<BitunixResponse>(
-      `${this.baseUrl}/api/v1/futures/market/tickers?${queryParams}`,
+      `${this.baseUrl}/api/v1/futures/market/tickers?symbol=${symbol}`,
       config
     );
     return response.data;
   }
 
+  async placeOrder(order: BitunixOrderRequest): Promise<BitunixResponse> {
+    const nonce = this.generateNonce();
+    const timestamp = Date.now().toString();
+    const bodyStr = JSON.stringify(order);
+    const sign = this.generateSignature(nonce, timestamp, '', bodyStr);
+    const config = this.getConfig(nonce, timestamp, sign);
+
+    const response = await axios.post<BitunixResponse>(
+      `${this.baseUrl}/api/v1/futures/trade/place_order`,
+      order,
+      config
+    );
+
+    if (response.data.code !== 0) {
+      throw new Error(`Bitunix API error: ${response.data.msg} (code: ${response.data.code})`);
+    }
+    return response.data;
+  }
+
   async getOpenPositions(): Promise<BitunixResponse> {
-    return this.request('GET', '/api/v1/futures/position/get_pending_positions');
+    const nonce = this.generateNonce();
+    const timestamp = Date.now().toString();
+    const sign = this.generateSignature(nonce, timestamp, '', '');
+    const config = this.getConfig(nonce, timestamp, sign);
+
+    const response = await axios.get<BitunixResponse>(
+      `${this.baseUrl}/api/v1/futures/position/get_pending_positions`,
+      config
+    );
+    return response.data;
   }
 
   async modifySL(symbol: string, positionId: string, newSL: number): Promise<BitunixResponse> {
-    return this.request('POST', '/api/v1/futures/trade/modify_tpsl', {
-      symbol,
-      positionId,
-      stopLoss: newSL
-    });
+    const nonce = this.generateNonce();
+    const timestamp = Date.now().toString();
+    const body = { symbol, positionId, stopLoss: newSL };
+    const bodyStr = JSON.stringify(body);
+    const sign = this.generateSignature(nonce, timestamp, '', bodyStr);
+    const config = this.getConfig(nonce, timestamp, sign);
+
+    const response = await axios.post<BitunixResponse>(
+      `${this.baseUrl}/api/v1/futures/trade/modify_tpsl`,
+      body,
+      config
+    );
+
+    if (response.data.code !== 0) {
+      throw new Error(`Bitunix API error: ${response.data.msg} (code: ${response.data.code})`);
+    }
+    return response.data;
   }
 }
