@@ -9,13 +9,19 @@ export class BitunixAPI {
   private readonly baseUrl = 'https://fapi.bitunix.com';
   private readonly proxyAgent: any;
 
-  constructor(apiKey: string, secretKey: string) {
+  constructor(
+    apiKey: string,
+    secretKey: string,
+    proxyHost?: string,
+    proxyPort?: string,
+    proxyUser?: string,
+    proxyPass?: string
+  ) {
     this.apiKey = apiKey;
     this.secretKey = secretKey;
 
-    const { PROXY_HOST, PROXY_PORT, PROXY_USER, PROXY_PASS } = process.env;
-    if (PROXY_HOST && PROXY_PORT && PROXY_USER && PROXY_PASS) {
-      const proxyUrl = `http://${PROXY_USER}:${PROXY_PASS}@${PROXY_HOST}:${PROXY_PORT}`;
+    if (proxyHost && proxyPort && proxyUser && proxyPass) {
+      const proxyUrl = `http://${proxyUser}:${proxyPass}@${proxyHost}:${proxyPort}`;
       this.proxyAgent = new HttpsProxyAgent(proxyUrl);
       console.log('✅ Proxy enabled');
     } else {
@@ -115,4 +121,3 @@ export class BitunixAPI {
     });
   }
 }
- 
