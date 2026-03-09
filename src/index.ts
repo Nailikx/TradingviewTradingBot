@@ -190,4 +190,3 @@ app.listen(PORT, () => {
 
 Commit → wait for 🟢 green → then visit:
 ```
-https://tradingviewtradingbot-production.up.railway.app/test
