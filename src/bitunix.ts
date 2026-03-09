@@ -1,15 +1,21 @@
 import axios from 'axios';
 import crypto from 'crypto';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 import { BitunixOrderRequest, BitunixResponse } from './types';
 
 export class BitunixAPI {
   private readonly apiKey: string;
   private readonly secretKey: string;
   private readonly baseUrl = 'https://fapi.bitunix.com';
+  private readonly proxyAgent: any;
 
   constructor(apiKey: string, secretKey: string) {
     this.apiKey = apiKey;
     this.secretKey = secretKey;
+    if (process.env.PROXY_URL) {
+      this.proxyAgent = new HttpsProxyAgent(process.env.PROXY_URL);
+      console.log('✅ Proxy enabled');
+    }
   }
 
   private generateNonce(): string {
@@ -38,10 +44,15 @@ export class BitunixAPI {
       'Content-Type': 'application/json'
     };
 
+    const config = {
+      headers,
+      ...(this.proxyAgent && { httpsAgent: this.proxyAgent })
+    };
+
     try {
       const response = method === 'POST'
-        ? await axios.post<BitunixResponse>(`${this.baseUrl}${endpoint}`, body, { headers })
-        : await axios.get<BitunixResponse>(`${this.baseUrl}${endpoint}`, { headers });
+        ? await axios.post<BitunixResponse>(`${this.baseUrl}${endpoint}`, body, config)
+        : await axios.get<BitunixResponse>(`${this.baseUrl}${endpoint}`, config);
 
       if (response.data.code !== 0) {
         throw new Error(`Bitunix API error: ${response.data.msg} (code: ${response.data.code})`);
@@ -68,17 +79,20 @@ export class BitunixAPI {
     const timestamp = Date.now().toString();
     const signature = this.generateSignature(nonce, timestamp, '');
 
+    const config = {
+      headers: {
+        'api-key': this.apiKey,
+        'nonce': nonce,
+        'timestamp': timestamp,
+        'sign': signature,
+        'Content-Type': 'application/json'
+      },
+      ...(this.proxyAgent && { httpsAgent: this.proxyAgent })
+    };
+
     const response = await axios.get<BitunixResponse>(
       `${this.baseUrl}/api/v1/futures/market/tickers?symbol=${symbol}`,
-      {
-        headers: {
-          'api-key': this.apiKey,
-          'nonce': nonce,
-          'timestamp': timestamp,
-          'sign': signature,
-          'Content-Type': 'application/json'
-        }
-      }
+      config
     );
     return response.data;
   }
