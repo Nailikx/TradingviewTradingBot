@@ -33,7 +33,12 @@ export class BitunixAPI {
   }
 
   private generateNonce(): string {
-    return crypto.randomBytes(16).toString('hex');
+    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    let result = '';
+    for (let i = 0; i < 32; i++) {
+      result += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return result;
   }
 
   private generateSignature(nonce: string, timestamp: string, queryParams: string, body: string): string {
@@ -92,7 +97,27 @@ export class BitunixAPI {
   }
 
   async getAccountInfo(): Promise<BitunixResponse> {
-    return this.request('GET', '/api/v1/futures/account', {}, 'marginCoin=USDT');
+    const nonce = this.generateNonce();
+    const timestamp = Date.now().toString();
+    const queryParams = 'marginCoin=USDT';
+    const signature = this.generateSignature(nonce, timestamp, queryParams, '');
+
+    const config = {
+      headers: {
+        'api-key': this.apiKey,
+        'nonce': nonce,
+        'timestamp': timestamp,
+        'sign': signature,
+        'Content-Type': 'application/json'
+      },
+      ...(this.proxyAgent && { httpsAgent: this.proxyAgent })
+    };
+
+    const response = await axios.get<BitunixResponse>(
+      `${this.baseUrl}/api/v1/futures/account?${queryParams}`,
+      config
+    );
+    return response.data;
   }
 
   async getTicker(symbol: string): Promise<BitunixResponse> {
