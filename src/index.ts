@@ -67,7 +67,7 @@ app.post('/webhook', async (req, res) => {
     console.log(`Balance: ${usdtBalance} USDT`);
 
     const ticker = await bitunix.getTicker(alert.symbol);
-    const currentPrice = parseFloat(ticker.data.lastPrice);
+    const currentPrice = parseFloat(ticker.data[0].lastPrice);
     console.log(`Current price: ${currentPrice}`);
 
     const limitPrice = alert.side === 'BUY'
@@ -146,7 +146,7 @@ setInterval(async () => {
       if (trade.halfSlTriggered) continue;
 
       const ticker = await bitunix.getTicker(trade.symbol);
-      const currentPrice = parseFloat(ticker.data.lastPrice);
+      const currentPrice = parseFloat(ticker.data[0].lastPrice);
 
       const totalDistance = Math.abs(trade.takeProfit - trade.entryPrice);
       const halfWay = trade.side === 'BUY'
@@ -172,7 +172,7 @@ setInterval(async () => {
 app.get('/test', async (_, res) => {
   try {
     const ticker = await bitunix.getTicker('BTCUSDT');
-    res.json({ success: true, price: ticker.data.lastPrice });
+    res.json({ success: true, price: ticker.data[0].lastPrice });
   } catch (error) {
     res.json({ success: false, error: error instanceof Error ? error.message : 'Unknown' });
   }
