@@ -39,8 +39,6 @@ export class BitunixAPI {
     return result;
   }
 
-  // queryParams: plain key=value pairs e.g. {marginCoin: 'USDT'}
-  // They get sorted by key and concatenated as keyValue for signature
   private buildQuerySignaturePart(params: Record<string, string>): string {
     return Object.keys(params)
       .sort()
@@ -86,13 +84,13 @@ export class BitunixAPI {
   async getTicker(symbol: string): Promise<BitunixResponse> {
     const nonce = this.generateNonce();
     const timestamp = Date.now().toString();
-    const params = { symbol };
+    const params = { symbols: symbol };
     const querySignaturePart = this.buildQuerySignaturePart(params);
     const sign = this.generateSignature(nonce, timestamp, querySignaturePart, '');
     const config = this.getConfig(nonce, timestamp, sign);
 
     const response = await axios.get<BitunixResponse>(
-      `${this.baseUrl}/api/v1/futures/market/tickers?symbol=${symbol}`,
+      `${this.baseUrl}/api/v1/futures/market/tickers?symbols=${symbol}`,
       config
     );
     return response.data;
