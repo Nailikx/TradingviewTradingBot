@@ -14,9 +14,13 @@ export interface BitunixOrderRequest {
   side: 'BUY' | 'SELL';
   tradeSide: 'OPEN' | 'CLOSE';
   orderType: 'MARKET' | 'LIMIT';
-  stopLoss?: number;
-  takeProfit?: number;
   price?: number;
+  tpPrice?: number;
+  tpStopType?: string;
+  tpOrderType?: string;
+  slPrice?: number;
+  slStopType?: string;
+  slOrderType?: string;
 }
 
 export interface BitunixResponse {
