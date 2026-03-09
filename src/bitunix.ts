@@ -12,9 +12,15 @@ export class BitunixAPI {
   constructor(apiKey: string, secretKey: string) {
     this.apiKey = apiKey;
     this.secretKey = secretKey;
-    if (process.env.PROXY_URL) {
-      this.proxyAgent = new HttpsProxyAgent(process.env.PROXY_URL);
+
+    const { PROXY_HOST, PROXY_PORT, PROXY_USER, PROXY_PASS } = process.env;
+    if (PROXY_HOST && PROXY_PORT && PROXY_USER && PROXY_PASS) {
+      const proxyUrl = `http://${PROXY_USER}:${PROXY_PASS}@${PROXY_HOST}:${PROXY_PORT}`;
+      this.proxyAgent = new HttpsProxyAgent(proxyUrl);
       console.log('✅ Proxy enabled');
+    } else {
+      this.proxyAgent = null;
+      console.log('⚠️ No proxy configured');
     }
   }
 
