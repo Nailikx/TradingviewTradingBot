@@ -20,6 +20,8 @@ export class BitunixAPI {
     this.apiKey = apiKey;
     this.secretKey = secretKey;
 
+    console.log('PROXY DEBUG:', proxyHost, proxyPort, proxyUser, proxyPass ? 'pass-set' : 'no-pass');
+
     if (proxyHost && proxyPort && proxyUser && proxyPass) {
       const proxyUrl = `http://${proxyUser}:${proxyPass}@${proxyHost}:${proxyPort}`;
       this.proxyAgent = new HttpsProxyAgent(proxyUrl);
