@@ -5,6 +5,7 @@ export interface TradingViewAlert {
   quantity?: number;
   stopLoss: number;
   takeProfit: number;
+  rr?: number;
 }
 
 export interface BitunixOrderRequest {
