@@ -30,6 +30,8 @@ const bitunix = new BitunixAPI(
 
 const RISK_PERCENT = 0.03;
 const LIMIT_BUFFER = 0.0005;
+const MAX_LEVERAGE = 40;
+const MIN_LEVERAGE = 1;
 
 interface ActiveTrade {
   symbol: string;
@@ -62,18 +64,22 @@ app.post('/webhook', async (req, res) => {
       return res.status(200).json({ status: 'Trade skipped', reason: `RR ${alert.rr} below minimum ${MIN_RR}` });
     }
 
+    // Step 1: Get balance
     const accountInfo = await bitunix.getAccountInfo();
     const usdtBalance = parseFloat(accountInfo.data.available);
     console.log(`Balance: ${usdtBalance} USDT`);
 
+    // Step 2: Get current price
     const ticker = await bitunix.getTicker(alert.symbol);
     const currentPrice = parseFloat(ticker.data[0].lastPrice);
     console.log(`Current price: ${currentPrice}`);
 
+    // Step 3: Calculate limit price
     const limitPrice = alert.side === 'BUY'
       ? parseFloat((currentPrice * (1 + LIMIT_BUFFER)).toFixed(2))
       : parseFloat((currentPrice * (1 - LIMIT_BUFFER)).toFixed(2));
 
+    // Step 4: Calculate position size based on 3% risk
     const riskAmount = usdtBalance * RISK_PERCENT;
     const slDistance = Math.abs(currentPrice - alert.stopLoss);
 
@@ -84,6 +90,17 @@ app.post('/webhook', async (req, res) => {
     const quantity = parseFloat((riskAmount / slDistance).toFixed(3));
     console.log(`Risk: $${riskAmount.toFixed(2)} | SL Distance: $${slDistance.toFixed(2)} | Qty: ${quantity}`);
 
+    // Step 5: Calculate required leverage
+    const notionalValue = quantity * currentPrice;
+    const requiredLeverage = Math.ceil(notionalValue / usdtBalance);
+    const leverage = Math.min(Math.max(requiredLeverage, MIN_LEVERAGE), MAX_LEVERAGE);
+    console.log(`Notional: $${notionalValue.toFixed(2)} | Required leverage: ${requiredLeverage}x | Using: ${leverage}x`);
+
+    // Step 6: Set leverage on Bitunix
+    await bitunix.changeLeverage(alert.symbol, leverage);
+    console.log(`✅ Leverage set to ${leverage}x`);
+
+    // Step 7: Place limit order
     const order = await bitunix.placeOrder({
       symbol: alert.symbol,
       qty: quantity,
@@ -118,6 +135,7 @@ app.post('/webhook', async (req, res) => {
       orderId: positionId,
       balance: usdtBalance,
       riskAmount: riskAmount.toFixed(2),
+      leverage,
       limitPrice,
       quantity
     });
