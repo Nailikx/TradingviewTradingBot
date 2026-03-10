@@ -96,6 +96,22 @@ export class BitunixAPI {
     return response.data;
   }
 
+  async changeLeverage(symbol: string, leverage: number): Promise<BitunixResponse> {
+    const nonce = this.generateNonce();
+    const timestamp = Date.now().toString();
+    const body = { symbol, leverage, marginCoin: 'USDT' };
+    const bodyStr = JSON.stringify(body);
+    const sign = this.generateSignature(nonce, timestamp, '', bodyStr);
+    const config = this.getConfig(nonce, timestamp, sign);
+
+    const response = await axios.post<BitunixResponse>(
+      `${this.baseUrl}/api/v1/futures/account/change_leverage`,
+      body,
+      config
+    );
+    return response.data;
+  }
+
   async placeOrder(order: BitunixOrderRequest): Promise<BitunixResponse> {
     const nonce = this.generateNonce();
     const timestamp = Date.now().toString();
@@ -148,4 +164,3 @@ export class BitunixAPI {
     return response.data;
   }
 }
- 
