@@ -30,7 +30,7 @@ const bitunix = new BitunixAPI(
 
 const RISK_PERCENT = 0.03;
 const LIMIT_BUFFER = 0.0005;
-const MAX_LEVERAGE = 40;
+const MAX_LEVERAGE = 100;
 const MIN_LEVERAGE = 1;
 
 interface ActiveTrade {
