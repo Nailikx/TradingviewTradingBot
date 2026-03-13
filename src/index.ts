@@ -90,15 +90,24 @@ app.post('/webhook', async (req, res) => {
     const quantity = parseFloat((riskAmount / slDistance).toFixed(3));
     console.log(`Risk: $${riskAmount.toFixed(2)} | SL Distance: $${slDistance.toFixed(2)} | Qty: ${quantity}`);
 
-    // Step 5: Calculate required leverage
-    const notionalValue = quantity * currentPrice;
-    const requiredLeverage = Math.ceil(notionalValue / usdtBalance);
-    const leverage = Math.min(Math.max(requiredLeverage, MIN_LEVERAGE), MAX_LEVERAGE);
-    console.log(`Notional: $${notionalValue.toFixed(2)} | Required leverage: ${requiredLeverage}x | Using: ${leverage}x`);
+    // Step 5: Check if position already open for this symbol
+    const openPositions = await bitunix.getOpenPositions();
+    const openPositionList = openPositions.data?.list || [];
+    const hasOpenPosition = openPositionList.some(
+      (p: any) => p.symbol === alert.symbol
+    );
 
-    // Step 6: Set leverage on Bitunix
-    await bitunix.changeLeverage(alert.symbol, leverage);
-    console.log(`✅ Leverage set to ${leverage}x`);
+    // Step 6: Only set leverage if no open position exists
+    if (!hasOpenPosition) {
+      const notionalValue = quantity * currentPrice;
+      const requiredLeverage = Math.ceil(notionalValue / usdtBalance);
+      const leverage = Math.min(Math.max(requiredLeverage, MIN_LEVERAGE), MAX_LEVERAGE);
+      console.log(`Notional: $${notionalValue.toFixed(2)} | Required leverage: ${requiredLeverage}x | Using: ${leverage}x`);
+      await bitunix.changeLeverage(alert.symbol, leverage);
+      console.log(`✅ Leverage set to ${leverage}x`);
+    } else {
+      console.log(`⚠️ Open position exists for ${alert.symbol} — skipping leverage change`);
+    }
 
     // Step 7: Place limit order
     const order = await bitunix.placeOrder({
@@ -135,7 +144,6 @@ app.post('/webhook', async (req, res) => {
       orderId: positionId,
       balance: usdtBalance,
       riskAmount: riskAmount.toFixed(2),
-      leverage,
       limitPrice,
       quantity
     });
