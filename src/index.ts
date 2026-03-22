@@ -24,6 +24,7 @@ if (!WEBHOOK_SECRET || !BITUNIX_API_KEY || !BITUNIX_API_SECRET) {
 
 const RISK_PERCENT = parseFloat(RISK_PCT);
 const MAX_LEV = parseInt(MAX_LEVERAGE);
+const LIMIT_BUFFER = 0.0005; // 0.05% buffer for limit order
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 const mainApi = new BitunixAPI(BITUNIX_API_KEY, BITUNIX_API_SECRET);
@@ -62,54 +63,49 @@ function parseGodCheatAlert(message: string): ParsedSignal | null {
 async function executeTrade(api: BitunixAPI, parsed: ParsedSignal, label: string): Promise<any> {
   const log: any = { account: label, signal: parsed.signal, side: parsed.side, time: new Date().toISOString() };
   try {
+    // 1. Balance
     const accountInfo = await api.getAccountInfo();
     const balance = parseFloat(accountInfo.data.available);
     log.balance = balance.toFixed(2);
     if (balance < 5) throw new Error(`Balance too low: $${balance}`);
 
+    // 2. Current price
     const ticker = await api.getTicker(parsed.symbol);
     const price = parseFloat(ticker.data[0].lastPrice);
     log.price = price;
 
+    // 3. Limit price — slightly above for BUY, slightly below for SELL
+    const limitPrice = parsed.side === 'BUY'
+      ? parseFloat((price * (1 + LIMIT_BUFFER)).toFixed(2))
+      : parseFloat((price * (1 - LIMIT_BUFFER)).toFixed(2));
+
+    // 4. Set leverage based on this trade's notional
+    const slDist = Math.abs(limitPrice - parsed.sl);
+    if (slDist === 0) throw new Error('SL cannot equal entry price');
+    const riskUsd = balance * RISK_PERCENT;
+    const qty = parseFloat((riskUsd / slDist).toFixed(3));
+    if (qty < 0.001) throw new Error(`Qty too small: ${qty}`);
+    const notional = qty * limitPrice;
+    const reqLev = Math.ceil(notional / balance);
+    const leverage = Math.min(Math.max(reqLev, 1), MAX_LEV);
+
+    // Only set leverage if no open position (avoid error when already open)
     const positions = await api.getOpenPositions();
     const positionList = positions.data?.list || [];
-    const existingPos = positionList.find((p: any) => p.symbol === parsed.symbol);
-
-    if (existingPos) {
-      const posIsLong = existingPos.side === 'BUY';
-      const sigIsLong = parsed.side === 'BUY';
-      if (posIsLong === sigIsLong) {
-        log.status = 'skipped — same direction already open';
-        console.log(`  [${label}] ⏭  ${log.status}`);
-        return log;
-      }
-      console.log(`  [${label}] Closing opposite position...`);
-      await api.closePosition(parsed.symbol, existingPos.side, parseFloat(existingPos.qty));
-      await sleep(1500);
-    }
-
-    if (!existingPos) {
-      const slDist = Math.abs(price - parsed.sl);
-      const qty = (balance * RISK_PERCENT) / slDist;
-      const notional = qty * price;
-      const reqLev = Math.ceil(notional / balance);
-      const leverage = Math.min(Math.max(reqLev, 1), MAX_LEV);
+    const hasOpen = positionList.some((p: any) => p.symbol === parsed.symbol);
+    if (!hasOpen) {
       await api.changeLeverage(parsed.symbol, leverage);
       console.log(`  [${label}] Leverage: ${leverage}x`);
     }
 
-    const freshAcc = await api.getAccountInfo();
-    const freshBalance = parseFloat(freshAcc.data.available);
-    const slDist = Math.abs(price - parsed.sl);
-    const qty = parseFloat(((freshBalance * RISK_PERCENT) / slDist).toFixed(3));
-    if (qty < 0.001) throw new Error(`Qty too small: ${qty}`);
-
+    // 5. Place LIMIT order — multiple trades allowed simultaneously
     const order = await api.placeOrder({
       symbol: parsed.symbol,
       qty,
       side: parsed.side,
       tradeSide: 'OPEN',
-      orderType: 'MARKET',
+      orderType: 'LIMIT',
+      price: limitPrice,
       tpPrice: parsed.tp,
       tpStopType: 'MARK_PRICE',
       tpOrderType: 'MARKET',
@@ -125,7 +121,7 @@ async function executeTrade(api: BitunixAPI, parsed: ParsedSignal, label: string
         symbol: parsed.symbol,
         positionId: orderId,
         side: parsed.side,
-        entryPrice: price,
+        entryPrice: limitPrice,
         stopLoss: parsed.sl,
         takeProfit: parsed.tp,
         originalSL: parsed.sl,
@@ -136,10 +132,13 @@ async function executeTrade(api: BitunixAPI, parsed: ParsedSignal, label: string
 
     log.status = 'executed';
     log.qty = qty;
+    log.limitPrice = limitPrice;
     log.sl = parsed.sl;
     log.tp = parsed.tp;
+    log.leverage = leverage;
+    log.riskUsd = riskUsd.toFixed(2);
     log.orderId = orderId;
-    console.log(`  [${label}] ✅ ${parsed.side} ${qty} ${parsed.symbol} @ ~$${price} | SL $${parsed.sl} | TP $${parsed.tp}`);
+    console.log(`  [${label}] ✅ LIMIT ${parsed.side} ${qty} @ $${limitPrice} | SL $${parsed.sl} | TP $${parsed.tp} | Risk $${riskUsd.toFixed(2)}`);
 
   } catch (err: any) {
     log.status = `error: ${err.message}`;
@@ -175,6 +174,7 @@ app.post('/webhook', async (req, res) => {
   res.json({ status: 'ok', signal: parsed.signal, results });
 });
 
+// Half-SL monitor
 setInterval(async () => {
   if (activeTrades.size === 0) return;
   try {
@@ -208,21 +208,21 @@ setInterval(async () => {
 
 app.get('/health', async (_, res) => {
   let balance = null;
-  let position = null;
+  let positions = null;
   try {
     const acc = await mainApi.getAccountInfo();
     balance = parseFloat(acc.data.available).toFixed(2);
     const pos = await mainApi.getOpenPositions();
-    position = pos.data?.list?.[0] || null;
+    positions = pos.data?.list || [];
   } catch (e) {}
   res.json({
     bot: 'GodCheat Auto-Trader',
     status: '🟢 running',
-    risk: `${RISK_PERCENT * 100}%`,
+    risk: `${RISK_PERCENT * 100}% per trade`,
     maxLeverage: MAX_LEV,
     copyAccounts: copyApis.length,
     balance: balance ? `$${balance}` : 'error',
-    openPosition: position ? `${position.side} ${position.qty} ${position.symbol}` : 'none',
+    openPositions: positions?.length || 0,
     activeTrades: activeTrades.size,
     totalTrades: tradeLog.length,
     recentTrades: tradeLog.slice(0, 5),
@@ -244,5 +244,5 @@ app.get('/test', async (_, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🟢 GodCheat bot running | Risk: ${RISK_PERCENT * 100}% | Leverage: max ${MAX_LEV}x | Copies: ${copyApis.length}`);
+  console.log(`🟢 GodCheat bot | Risk: ${RISK_PERCENT * 100}%/trade | Leverage: max ${MAX_LEV}x | Copies: ${copyApis.length}`);
 });
