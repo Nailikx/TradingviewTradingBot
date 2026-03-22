@@ -24,7 +24,7 @@ if (!WEBHOOK_SECRET || !BITUNIX_API_KEY || !BITUNIX_API_SECRET) {
 
 const RISK_PERCENT = parseFloat(RISK_PCT);
 const MAX_LEV = parseInt(MAX_LEVERAGE);
-const LIMIT_BUFFER = 0.0005; // 0.05% buffer for limit order
+const LIMIT_BUFFER = 0.0005;
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 const mainApi = new BitunixAPI(BITUNIX_API_KEY, BITUNIX_API_SECRET);
@@ -63,9 +63,14 @@ function parseGodCheatAlert(message: string): ParsedSignal | null {
 async function executeTrade(api: BitunixAPI, parsed: ParsedSignal, label: string): Promise<any> {
   const log: any = { account: label, signal: parsed.signal, side: parsed.side, time: new Date().toISOString() };
   try {
-    // 1. Balance
+    // 1. Get total balance (equity) — always 3% of full account regardless of open trades
     const accountInfo = await api.getAccountInfo();
-    const balance = parseFloat(accountInfo.data.available);
+    const balance = parseFloat(
+      accountInfo.data.totalMarginBalance ??
+      accountInfo.data.equity ??
+      accountInfo.data.totalBalance ??
+      accountInfo.data.available
+    );
     log.balance = balance.toFixed(2);
     if (balance < 5) throw new Error(`Balance too low: $${balance}`);
 
@@ -74,22 +79,22 @@ async function executeTrade(api: BitunixAPI, parsed: ParsedSignal, label: string
     const price = parseFloat(ticker.data[0].lastPrice);
     log.price = price;
 
-    // 3. Limit price — slightly above for BUY, slightly below for SELL
+    // 3. Limit price
     const limitPrice = parsed.side === 'BUY'
       ? parseFloat((price * (1 + LIMIT_BUFFER)).toFixed(2))
       : parseFloat((price * (1 - LIMIT_BUFFER)).toFixed(2));
 
-    // 4. Set leverage based on this trade's notional
+    // 4. Position size based on total balance
     const slDist = Math.abs(limitPrice - parsed.sl);
     if (slDist === 0) throw new Error('SL cannot equal entry price');
     const riskUsd = balance * RISK_PERCENT;
     const qty = parseFloat((riskUsd / slDist).toFixed(3));
     if (qty < 0.001) throw new Error(`Qty too small: ${qty}`);
+
+    // 5. Leverage
     const notional = qty * limitPrice;
     const reqLev = Math.ceil(notional / balance);
     const leverage = Math.min(Math.max(reqLev, 1), MAX_LEV);
-
-    // Only set leverage if no open position (avoid error when already open)
     const positions = await api.getOpenPositions();
     const positionList = positions.data?.list || [];
     const hasOpen = positionList.some((p: any) => p.symbol === parsed.symbol);
@@ -98,7 +103,7 @@ async function executeTrade(api: BitunixAPI, parsed: ParsedSignal, label: string
       console.log(`  [${label}] Leverage: ${leverage}x`);
     }
 
-    // 5. Place LIMIT order — multiple trades allowed simultaneously
+    // 6. Place LIMIT order
     const order = await api.placeOrder({
       symbol: parsed.symbol,
       qty,
@@ -211,17 +216,22 @@ app.get('/health', async (_, res) => {
   let positions = null;
   try {
     const acc = await mainApi.getAccountInfo();
-    balance = parseFloat(acc.data.available).toFixed(2);
+    balance = parseFloat(
+      acc.data.totalMarginBalance ??
+      acc.data.equity ??
+      acc.data.totalBalance ??
+      acc.data.available
+    ).toFixed(2);
     const pos = await mainApi.getOpenPositions();
     positions = pos.data?.list || [];
   } catch (e) {}
   res.json({
     bot: 'GodCheat Auto-Trader',
     status: '🟢 running',
-    risk: `${RISK_PERCENT * 100}% per trade`,
+    risk: `${RISK_PERCENT * 100}% of total balance per trade`,
     maxLeverage: MAX_LEV,
     copyAccounts: copyApis.length,
-    balance: balance ? `$${balance}` : 'error',
+    totalBalance: balance ? `$${balance}` : 'error',
     openPositions: positions?.length || 0,
     activeTrades: activeTrades.size,
     totalTrades: tradeLog.length,
@@ -237,12 +247,18 @@ app.get('/test', async (_, res) => {
   try {
     const ticker = await mainApi.getTicker('BTCUSDT');
     const acc = await mainApi.getAccountInfo();
-    res.json({ success: true, price: ticker.data[0].lastPrice, balance: acc.data.available });
+    const balance = parseFloat(
+      acc.data.totalMarginBalance ??
+      acc.data.equity ??
+      acc.data.totalBalance ??
+      acc.data.available
+    );
+    res.json({ success: true, price: ticker.data[0].lastPrice, totalBalance: balance });
   } catch (err: any) {
     res.json({ success: false, error: err.message });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`🟢 GodCheat bot | Risk: ${RISK_PERCENT * 100}%/trade | Leverage: max ${MAX_LEV}x | Copies: ${copyApis.length}`);
+  console.log(`🟢 GodCheat bot | Risk: ${RISK_PERCENT * 100}% of total balance | Leverage: max ${MAX_LEV}x | Copies: ${copyApis.length}`);
 });
