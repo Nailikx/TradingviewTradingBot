@@ -3,215 +3,246 @@ dotenv.config();
 
 import express from 'express';
 import { BitunixAPI } from './bitunix';
-import { TradingViewAlert } from './types';
+import { GodCheatAlert, ParsedSignal, ActiveTrade } from './types';
 
 const app = express();
 app.use(express.json());
 
 const {
   PORT = 3000,
-  TRADINGVIEW_TOKEN,
-  BITUNIX_API_KEY,
-  BITUNIX_API_SECRET
-} = process.env;
-
-if (!TRADINGVIEW_TOKEN || !BITUNIX_API_KEY || !BITUNIX_API_SECRET) {
-  throw new Error('Missing required environment variables');
-}
-
-const bitunix = new BitunixAPI(
+  WEBHOOK_SECRET,
   BITUNIX_API_KEY,
   BITUNIX_API_SECRET,
-  process.env.PROXY_HOST,
-  process.env.PROXY_PORT,
-  process.env.PROXY_USER,
-  process.env.PROXY_PASS
-);
+  RISK_PCT = '0.03',
+  MAX_LEVERAGE = '20',
+  COPY_ACCOUNTS = '',
+} = process.env;
 
-const RISK_PERCENT = 0.03;
-const LIMIT_BUFFER = 0.0005;
-const MAX_LEVERAGE = 100;
-const MIN_LEVERAGE = 1;
-
-interface ActiveTrade {
-  symbol: string;
-  positionId: string;
-  side: 'BUY' | 'SELL';
-  entryPrice: number;
-  stopLoss: number;
-  takeProfit: number;
-  halfSlTriggered: boolean;
-  originalSL: number;
+if (!WEBHOOK_SECRET || !BITUNIX_API_KEY || !BITUNIX_API_SECRET) {
+  throw new Error('Missing required env vars: WEBHOOK_SECRET, BITUNIX_API_KEY, BITUNIX_API_SECRET');
 }
 
-const activeTrades: Map<string, ActiveTrade> = new Map();
+const RISK_PERCENT = parseFloat(RISK_PCT);
+const MAX_LEV = parseInt(MAX_LEVERAGE);
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-app.post('/webhook', async (req, res) => {
+const mainApi = new BitunixAPI(BITUNIX_API_KEY, BITUNIX_API_SECRET);
+
+const copyApis: BitunixAPI[] = COPY_ACCOUNTS
+  .split(',')
+  .filter(s => s.includes(':'))
+  .map(s => {
+    const [key, secret] = s.split(':');
+    return new BitunixAPI(key, secret);
+  });
+
+const activeTrades = new Map<string, ActiveTrade>();
+const tradeLog: any[] = [];
+
+function parseGodCheatAlert(message: string): ParsedSignal | null {
+  if (!message || message.includes('👀')) return null;
+  const slMatch = message.match(/SL\s+([\d.]+)/);
+  const tpMatch = message.match(/TP\s+([\d.]+)/);
+  if (!slMatch || !tpMatch) return null;
+  const sl = parseFloat(slMatch[1]);
+  const tp = parseFloat(tpMatch[1]);
+  if (!sl || !tp) return null;
+  let signal = '';
+  let side: 'BUY' | 'SELL' = 'BUY';
+  if      (message.includes('VSB Long'))   { signal = 'VSB Long';   side = 'BUY';  }
+  else if (message.includes('RSI50 Long')) { signal = 'RSI50 Long'; side = 'BUY';  }
+  else if (message.includes('Dbl Bottom')) { signal = 'Dbl Bottom'; side = 'BUY';  }
+  else if (message.includes('VSB Short'))  { signal = 'VSB Short';  side = 'SELL'; }
+  else return null;
+  const symMatch = message.match(/—\s+([A-Z]+USDT)/);
+  const symbol = symMatch ? symMatch[1] : 'BTCUSDT';
+  return { signal, symbol, side, sl, tp };
+}
+
+async function executeTrade(api: BitunixAPI, parsed: ParsedSignal, label: string): Promise<any> {
+  const log: any = { account: label, signal: parsed.signal, side: parsed.side, time: new Date().toISOString() };
   try {
-    const alert: TradingViewAlert = req.body;
+    const accountInfo = await api.getAccountInfo();
+    const balance = parseFloat(accountInfo.data.available);
+    log.balance = balance.toFixed(2);
+    if (balance < 5) throw new Error(`Balance too low: $${balance}`);
 
-    if (alert.token !== TRADINGVIEW_TOKEN) {
-      return res.status(403).json({ error: 'Invalid token' });
+    const ticker = await api.getTicker(parsed.symbol);
+    const price = parseFloat(ticker.data[0].lastPrice);
+    log.price = price;
+
+    const positions = await api.getOpenPositions();
+    const positionList = positions.data?.list || [];
+    const existingPos = positionList.find((p: any) => p.symbol === parsed.symbol);
+
+    if (existingPos) {
+      const posIsLong = existingPos.side === 'BUY';
+      const sigIsLong = parsed.side === 'BUY';
+      if (posIsLong === sigIsLong) {
+        log.status = 'skipped — same direction already open';
+        console.log(`  [${label}] ⏭  ${log.status}`);
+        return log;
+      }
+      console.log(`  [${label}] Closing opposite position...`);
+      await api.closePosition(parsed.symbol, existingPos.side, parseFloat(existingPos.qty));
+      await sleep(1500);
     }
 
-    if (!alert.symbol || !alert.side || !alert.stopLoss || !alert.takeProfit) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    if (!existingPos) {
+      const slDist = Math.abs(price - parsed.sl);
+      const qty = (balance * RISK_PERCENT) / slDist;
+      const notional = qty * price;
+      const reqLev = Math.ceil(notional / balance);
+      const leverage = Math.min(Math.max(reqLev, 1), MAX_LEV);
+      await api.changeLeverage(parsed.symbol, leverage);
+      console.log(`  [${label}] Leverage: ${leverage}x`);
     }
 
-    const MIN_RR = 0.5;
-    if (alert.rr && alert.rr < MIN_RR) {
-      console.log(`❌ Trade rejected — RR too low: ${alert.rr} (min ${MIN_RR})`);
-      return res.status(200).json({ status: 'Trade skipped', reason: `RR ${alert.rr} below minimum ${MIN_RR}` });
-    }
+    const freshAcc = await api.getAccountInfo();
+    const freshBalance = parseFloat(freshAcc.data.available);
+    const slDist = Math.abs(price - parsed.sl);
+    const qty = parseFloat(((freshBalance * RISK_PERCENT) / slDist).toFixed(3));
+    if (qty < 0.001) throw new Error(`Qty too small: ${qty}`);
 
-    // Step 1: Get balance
-    const accountInfo = await bitunix.getAccountInfo();
-    const usdtBalance = parseFloat(accountInfo.data.available);
-    console.log(`Balance: ${usdtBalance} USDT`);
-
-    // Step 2: Get current price
-    const ticker = await bitunix.getTicker(alert.symbol);
-    const currentPrice = parseFloat(ticker.data[0].lastPrice);
-    console.log(`Current price: ${currentPrice}`);
-
-    // Step 3: Calculate limit price
-    const limitPrice = alert.side === 'BUY'
-      ? parseFloat((currentPrice * (1 + LIMIT_BUFFER)).toFixed(2))
-      : parseFloat((currentPrice * (1 - LIMIT_BUFFER)).toFixed(2));
-
-    // Step 4: Calculate position size based on 3% risk
-    const riskAmount = usdtBalance * RISK_PERCENT;
-    const slDistance = Math.abs(currentPrice - alert.stopLoss);
-
-    if (slDistance === 0) {
-      return res.status(400).json({ error: 'Stop loss cannot equal entry price' });
-    }
-
-    const quantity = parseFloat((riskAmount / slDistance).toFixed(3));
-    console.log(`Risk: $${riskAmount.toFixed(2)} | SL Distance: $${slDistance.toFixed(2)} | Qty: ${quantity}`);
-
-    // Step 5: Check if position already open for this symbol
-    const openPositions = await bitunix.getOpenPositions();
-    const openPositionList = openPositions.data?.list || [];
-    const hasOpenPosition = openPositionList.some(
-      (p: any) => p.symbol === alert.symbol
-    );
-
-    // Step 6: Only set leverage if no open position exists
-    if (!hasOpenPosition) {
-      const notionalValue = quantity * currentPrice;
-      const requiredLeverage = Math.ceil(notionalValue / usdtBalance);
-      const leverage = Math.min(Math.max(requiredLeverage, MIN_LEVERAGE), MAX_LEVERAGE);
-      console.log(`Notional: $${notionalValue.toFixed(2)} | Required leverage: ${requiredLeverage}x | Using: ${leverage}x`);
-      await bitunix.changeLeverage(alert.symbol, leverage);
-      console.log(`✅ Leverage set to ${leverage}x`);
-    } else {
-      console.log(`⚠️ Open position exists for ${alert.symbol} — skipping leverage change`);
-    }
-
-    // Step 7: Place limit order
-    const order = await bitunix.placeOrder({
-      symbol: alert.symbol,
-      qty: quantity,
-      side: alert.side,
+    const order = await api.placeOrder({
+      symbol: parsed.symbol,
+      qty,
+      side: parsed.side,
       tradeSide: 'OPEN',
-      orderType: 'LIMIT',
-      price: limitPrice,
-      tpPrice: alert.takeProfit,
+      orderType: 'MARKET',
+      tpPrice: parsed.tp,
       tpStopType: 'MARK_PRICE',
       tpOrderType: 'MARKET',
-      slPrice: alert.stopLoss,
+      slPrice: parsed.sl,
       slStopType: 'MARK_PRICE',
-      slOrderType: 'MARKET'
+      slOrderType: 'MARKET',
     });
 
-    const positionId = order.data.orderId;
+    const orderId = order.data?.orderId;
 
-    activeTrades.set(positionId, {
-      symbol: alert.symbol,
-      positionId,
-      side: alert.side,
-      entryPrice: limitPrice,
-      stopLoss: alert.stopLoss,
-      takeProfit: alert.takeProfit,
-      halfSlTriggered: false,
-      originalSL: alert.stopLoss
-    });
+    if (label === 'MAIN' && orderId) {
+      activeTrades.set(orderId, {
+        symbol: parsed.symbol,
+        positionId: orderId,
+        side: parsed.side,
+        entryPrice: price,
+        stopLoss: parsed.sl,
+        takeProfit: parsed.tp,
+        originalSL: parsed.sl,
+        halfSlTriggered: false,
+        signal: parsed.signal,
+      });
+    }
 
-    console.log(`✅ Order placed: ${positionId} | Price: ${limitPrice} | SL: ${alert.stopLoss} | TP: ${alert.takeProfit}`);
-    res.json({
-      status: 'Order placed',
-      orderId: positionId,
-      balance: usdtBalance,
-      riskAmount: riskAmount.toFixed(2),
-      limitPrice,
-      quantity
-    });
+    log.status = 'executed';
+    log.qty = qty;
+    log.sl = parsed.sl;
+    log.tp = parsed.tp;
+    log.orderId = orderId;
+    console.log(`  [${label}] ✅ ${parsed.side} ${qty} ${parsed.symbol} @ ~$${price} | SL $${parsed.sl} | TP $${parsed.tp}`);
 
-  } catch (error) {
-    console.error('Error processing webhook:', error);
-    res.status(500).json({
-      error: 'Failed to place order',
-      details: error instanceof Error ? error.message : 'Unknown error'
-    });
+  } catch (err: any) {
+    log.status = `error: ${err.message}`;
+    console.error(`  [${label}] ❌ ${err.message}`);
   }
+  return log;
+}
+
+app.post('/webhook', async (req, res) => {
+  const { token, message } = req.body as GodCheatAlert;
+  if (token !== WEBHOOK_SECRET) {
+    return res.status(403).json({ error: 'Invalid token' });
+  }
+  console.log(`\n📡 [${new Date().toISOString()}] ${message}`);
+  if (message?.includes('👀')) {
+    return res.json({ status: 'ignored' });
+  }
+  const parsed = parseGodCheatAlert(message);
+  if (!parsed) {
+    return res.json({ status: 'ignored', reason: 'unrecognized format' });
+  }
+  console.log(`  → ${parsed.signal} | ${parsed.side} | SL: ${parsed.sl} | TP: ${parsed.tp}`);
+  const results = [];
+  const mainResult = await executeTrade(mainApi, parsed, 'MAIN');
+  results.push(mainResult);
+  tradeLog.unshift(mainResult);
+  for (let i = 0; i < copyApis.length; i++) {
+    const result = await executeTrade(copyApis[i], parsed, `COPY_${i + 1}`);
+    results.push(result);
+    tradeLog.unshift(result);
+  }
+  if (tradeLog.length > 500) tradeLog.splice(500);
+  res.json({ status: 'ok', signal: parsed.signal, results });
 });
 
 setInterval(async () => {
   if (activeTrades.size === 0) return;
-
   try {
-    const positions = await bitunix.getOpenPositions();
-    const openPositionIds = new Set(
-      (positions.data?.list || []).map((p: any) => p.positionId)
-    );
-
-    for (const [positionId, trade] of activeTrades.entries()) {
-      if (!openPositionIds.has(positionId)) {
-        console.log(`Trade ${positionId} closed — removing from monitor`);
-        activeTrades.delete(positionId);
+    const positions = await mainApi.getOpenPositions();
+    const openIds = new Set((positions.data?.list || []).map((p: any) => p.positionId));
+    for (const [id, trade] of activeTrades.entries()) {
+      if (!openIds.has(id)) {
+        console.log(`Trade ${id} (${trade.signal}) closed`);
+        activeTrades.delete(id);
         continue;
       }
-
       if (trade.halfSlTriggered) continue;
-
-      const ticker = await bitunix.getTicker(trade.symbol);
+      const ticker = await mainApi.getTicker(trade.symbol);
       const currentPrice = parseFloat(ticker.data[0].lastPrice);
-
-      const totalDistance = Math.abs(trade.takeProfit - trade.entryPrice);
+      const totalDist = Math.abs(trade.takeProfit - trade.entryPrice);
       const halfWay = trade.side === 'BUY'
-        ? trade.entryPrice + totalDistance * 0.5
-        : trade.entryPrice - totalDistance * 0.5;
-
-      const halfWayReached = trade.side === 'BUY'
-        ? currentPrice >= halfWay
-        : currentPrice <= halfWay;
-
-      if (halfWayReached) {
+        ? trade.entryPrice + totalDist * 0.5
+        : trade.entryPrice - totalDist * 0.5;
+      const reached = trade.side === 'BUY' ? currentPrice >= halfWay : currentPrice <= halfWay;
+      if (reached) {
         const newSL = parseFloat(((trade.entryPrice + trade.originalSL) / 2).toFixed(2));
-        await bitunix.modifySL(trade.symbol, positionId, newSL);
+        await mainApi.modifySL(trade.symbol, id, newSL);
         trade.halfSlTriggered = true;
-        console.log(`✅ Half SL triggered for ${positionId} | New SL: ${newSL}`);
+        console.log(`✅ Half-SL triggered for ${trade.signal} | New SL: $${newSL}`);
       }
     }
-  } catch (error) {
-    console.error('Error in SL monitor:', error);
+  } catch (err: any) {
+    console.error('SL monitor error:', err.message);
   }
 }, 30000);
 
+app.get('/health', async (_, res) => {
+  let balance = null;
+  let position = null;
+  try {
+    const acc = await mainApi.getAccountInfo();
+    balance = parseFloat(acc.data.available).toFixed(2);
+    const pos = await mainApi.getOpenPositions();
+    position = pos.data?.list?.[0] || null;
+  } catch (e) {}
+  res.json({
+    bot: 'GodCheat Auto-Trader',
+    status: '🟢 running',
+    risk: `${RISK_PERCENT * 100}%`,
+    maxLeverage: MAX_LEV,
+    copyAccounts: copyApis.length,
+    balance: balance ? `$${balance}` : 'error',
+    openPosition: position ? `${position.side} ${position.qty} ${position.symbol}` : 'none',
+    activeTrades: activeTrades.size,
+    totalTrades: tradeLog.length,
+    recentTrades: tradeLog.slice(0, 5),
+  });
+});
+
+app.get('/trades', (_, res) => {
+  res.json({ total: tradeLog.length, trades: tradeLog });
+});
+
 app.get('/test', async (_, res) => {
   try {
-    const ticker = await bitunix.getTicker('BTCUSDT');
-    res.json({ success: true, price: ticker.data[0].lastPrice });
-  } catch (error) {
-    res.json({ success: false, error: error instanceof Error ? error.message : 'Unknown' });
+    const ticker = await mainApi.getTicker('BTCUSDT');
+    const acc = await mainApi.getAccountInfo();
+    res.json({ success: true, price: ticker.data[0].lastPrice, balance: acc.data.available });
+  } catch (err: any) {
+    res.json({ success: false, error: err.message });
   }
 });
 
-app.get('/health', (_, res) => {
-  res.json({ status: 'ok' });
-});
-
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🟢 GodCheat bot running | Risk: ${RISK_PERCENT * 100}% | Leverage: max ${MAX_LEV}x | Copies: ${copyApis.length}`);
 });
