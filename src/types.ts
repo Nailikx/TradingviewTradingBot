@@ -1,11 +1,14 @@
-export interface TradingViewAlert {
+export interface GodCheatAlert {
   token: string;
+  message: string;
+}
+
+export interface ParsedSignal {
+  signal: string;
   symbol: string;
   side: 'BUY' | 'SELL';
-  quantity?: number;
-  stopLoss: number;
-  takeProfit: number;
-  rr?: number;
+  sl: number;
+  tp: number;
 }
 
 export interface BitunixOrderRequest {
@@ -27,4 +30,16 @@ export interface BitunixResponse {
   code: number;
   msg: string;
   data: any;
+}
+
+export interface ActiveTrade {
+  symbol: string;
+  positionId: string;
+  side: 'BUY' | 'SELL';
+  entryPrice: number;
+  stopLoss: number;
+  takeProfit: number;
+  originalSL: number;
+  halfSlTriggered: boolean;
+  signal: string;
 }
