@@ -63,7 +63,7 @@ function parseGodCheatAlert(message: string): ParsedSignal | null {
 async function executeTrade(api: BitunixAPI, parsed: ParsedSignal, label: string): Promise<any> {
   const log: any = { account: label, signal: parsed.signal, side: parsed.side, time: new Date().toISOString() };
   try {
-    // 1. Get total balance (equity) — always 3% of full account regardless of open trades
+    // 1. Total balance
     const accountInfo = await api.getAccountInfo();
     const balance = parseFloat(
       accountInfo.data.totalMarginBalance ??
@@ -84,23 +84,21 @@ async function executeTrade(api: BitunixAPI, parsed: ParsedSignal, label: string
       ? parseFloat((price * (1 + LIMIT_BUFFER)).toFixed(2))
       : parseFloat((price * (1 - LIMIT_BUFFER)).toFixed(2));
 
-    // 4. Position size based on total balance
+    // 4. Position size — always 3% of total balance
     const slDist = Math.abs(limitPrice - parsed.sl);
     if (slDist === 0) throw new Error('SL cannot equal entry price');
     const riskUsd = balance * RISK_PERCENT;
     const qty = parseFloat((riskUsd / slDist).toFixed(3));
     if (qty < 0.001) throw new Error(`Qty too small: ${qty}`);
 
-    // 5. Leverage
-    const notional = qty * limitPrice;
-    const reqLev = Math.ceil(notional / balance);
-    const leverage = Math.min(Math.max(reqLev, 1), MAX_LEV);
+    // 5. Fixed leverage — always MAX_LEV (20x)
+    // Each trade uses ~15% margin at 20x, allowing 6 simultaneous trades
     const positions = await api.getOpenPositions();
     const positionList = positions.data?.list || [];
     const hasOpen = positionList.some((p: any) => p.symbol === parsed.symbol);
     if (!hasOpen) {
-      await api.changeLeverage(parsed.symbol, leverage);
-      console.log(`  [${label}] Leverage: ${leverage}x`);
+      await api.changeLeverage(parsed.symbol, MAX_LEV);
+      console.log(`  [${label}] Leverage: ${MAX_LEV}x (fixed)`);
     }
 
     // 6. Place LIMIT order
@@ -140,10 +138,10 @@ async function executeTrade(api: BitunixAPI, parsed: ParsedSignal, label: string
     log.limitPrice = limitPrice;
     log.sl = parsed.sl;
     log.tp = parsed.tp;
-    log.leverage = leverage;
+    log.leverage = MAX_LEV;
     log.riskUsd = riskUsd.toFixed(2);
     log.orderId = orderId;
-    console.log(`  [${label}] ✅ LIMIT ${parsed.side} ${qty} @ $${limitPrice} | SL $${parsed.sl} | TP $${parsed.tp} | Risk $${riskUsd.toFixed(2)}`);
+    console.log(`  [${label}] ✅ LIMIT ${parsed.side} ${qty} @ $${limitPrice} | SL $${parsed.sl} | TP $${parsed.tp} | Risk $${riskUsd.toFixed(2)} | Lev ${MAX_LEV}x`);
 
   } catch (err: any) {
     log.status = `error: ${err.message}`;
@@ -229,7 +227,7 @@ app.get('/health', async (_, res) => {
     bot: 'GodCheat Auto-Trader',
     status: '🟢 running',
     risk: `${RISK_PERCENT * 100}% of total balance per trade`,
-    maxLeverage: MAX_LEV,
+    leverage: `${MAX_LEV}x fixed`,
     copyAccounts: copyApis.length,
     totalBalance: balance ? `$${balance}` : 'error',
     openPositions: positions?.length || 0,
@@ -260,5 +258,5 @@ app.get('/test', async (_, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🟢 GodCheat bot | Risk: ${RISK_PERCENT * 100}% of total balance | Leverage: max ${MAX_LEV}x | Copies: ${copyApis.length}`);
+  console.log(`🟢 GodCheat bot | Risk: ${RISK_PERCENT * 100}%/trade | Leverage: ${MAX_LEV}x fixed | Copies: ${copyApis.length}`);
 });
