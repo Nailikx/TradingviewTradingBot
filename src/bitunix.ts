@@ -1,33 +1,15 @@
 import axios from 'axios';
 import crypto from 'crypto';
-import { HttpsProxyAgent } from 'https-proxy-agent';
 import { BitunixOrderRequest, BitunixResponse } from './types';
 
 export class BitunixAPI {
   private readonly apiKey: string;
   private readonly secretKey: string;
   private readonly baseUrl = 'https://fapi.bitunix.com';
-  private readonly proxyAgent: any;
 
-  constructor(
-    apiKey: string,
-    secretKey: string,
-    proxyHost?: string,
-    proxyPort?: string,
-    proxyUser?: string,
-    proxyPass?: string
-  ) {
+  constructor(apiKey: string, secretKey: string) {
     this.apiKey = apiKey;
     this.secretKey = secretKey;
-
-    if (proxyHost && proxyPort && proxyUser && proxyPass) {
-      const proxyUrl = `http://${proxyUser}:${proxyPass}@${proxyHost}:${proxyPort}`;
-      this.proxyAgent = new HttpsProxyAgent(proxyUrl);
-      console.log('✅ Proxy enabled');
-    } else {
-      this.proxyAgent = null;
-      console.log('⚠️ No proxy configured');
-    }
   }
 
   private generateNonce(): string {
@@ -60,9 +42,8 @@ export class BitunixAPI {
         'nonce': nonce,
         'timestamp': timestamp,
         'sign': sign,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
       },
-      ...(this.proxyAgent && { httpsAgent: this.proxyAgent })
     };
   }
 
@@ -70,30 +51,26 @@ export class BitunixAPI {
     const nonce = this.generateNonce();
     const timestamp = Date.now().toString();
     const params = { marginCoin: 'USDT' };
-    const querySignaturePart = this.buildQuerySignaturePart(params);
-    const sign = this.generateSignature(nonce, timestamp, querySignaturePart, '');
+    const qsp = this.buildQuerySignaturePart(params);
+    const sign = this.generateSignature(nonce, timestamp, qsp, '');
     const config = this.getConfig(nonce, timestamp, sign);
-
-    const response = await axios.get<BitunixResponse>(
-      `${this.baseUrl}/api/v1/futures/account?marginCoin=USDT`,
-      config
+    const res = await axios.get<BitunixResponse>(
+      `${this.baseUrl}/api/v1/futures/account?marginCoin=USDT`, config
     );
-    return response.data;
+    return res.data;
   }
 
   async getTicker(symbol: string): Promise<BitunixResponse> {
     const nonce = this.generateNonce();
     const timestamp = Date.now().toString();
     const params = { symbols: symbol };
-    const querySignaturePart = this.buildQuerySignaturePart(params);
-    const sign = this.generateSignature(nonce, timestamp, querySignaturePart, '');
+    const qsp = this.buildQuerySignaturePart(params);
+    const sign = this.generateSignature(nonce, timestamp, qsp, '');
     const config = this.getConfig(nonce, timestamp, sign);
-
-    const response = await axios.get<BitunixResponse>(
-      `${this.baseUrl}/api/v1/futures/market/tickers?symbols=${symbol}`,
-      config
+    const res = await axios.get<BitunixResponse>(
+      `${this.baseUrl}/api/v1/futures/market/tickers?symbols=${symbol}`, config
     );
-    return response.data;
+    return res.data;
   }
 
   async changeLeverage(symbol: string, leverage: number): Promise<BitunixResponse> {
@@ -103,13 +80,10 @@ export class BitunixAPI {
     const bodyStr = JSON.stringify(body);
     const sign = this.generateSignature(nonce, timestamp, '', bodyStr);
     const config = this.getConfig(nonce, timestamp, sign);
-
-    const response = await axios.post<BitunixResponse>(
-      `${this.baseUrl}/api/v1/futures/account/change_leverage`,
-      body,
-      config
+    const res = await axios.post<BitunixResponse>(
+      `${this.baseUrl}/api/v1/futures/account/change_leverage`, body, config
     );
-    return response.data;
+    return res.data;
   }
 
   async placeOrder(order: BitunixOrderRequest): Promise<BitunixResponse> {
@@ -118,17 +92,13 @@ export class BitunixAPI {
     const bodyStr = JSON.stringify(order);
     const sign = this.generateSignature(nonce, timestamp, '', bodyStr);
     const config = this.getConfig(nonce, timestamp, sign);
-
-    const response = await axios.post<BitunixResponse>(
-      `${this.baseUrl}/api/v1/futures/trade/place_order`,
-      order,
-      config
+    const res = await axios.post<BitunixResponse>(
+      `${this.baseUrl}/api/v1/futures/trade/place_order`, order, config
     );
-
-    if (response.data.code !== 0) {
-      throw new Error(`Bitunix API error: ${response.data.msg} (code: ${response.data.code})`);
+    if (res.data.code !== 0) {
+      throw new Error(`Bitunix API error: ${res.data.msg} (code: ${res.data.code})`);
     }
-    return response.data;
+    return res.data;
   }
 
   async getOpenPositions(): Promise<BitunixResponse> {
@@ -136,12 +106,20 @@ export class BitunixAPI {
     const timestamp = Date.now().toString();
     const sign = this.generateSignature(nonce, timestamp, '', '');
     const config = this.getConfig(nonce, timestamp, sign);
-
-    const response = await axios.get<BitunixResponse>(
-      `${this.baseUrl}/api/v1/futures/position/get_pending_positions`,
-      config
+    const res = await axios.get<BitunixResponse>(
+      `${this.baseUrl}/api/v1/futures/position/get_pending_positions`, config
     );
-    return response.data;
+    return res.data;
+  }
+
+  async closePosition(symbol: string, side: 'BUY' | 'SELL', qty: number): Promise<BitunixResponse> {
+    return this.placeOrder({
+      symbol,
+      qty,
+      side: side === 'BUY' ? 'SELL' : 'BUY',
+      tradeSide: 'CLOSE',
+      orderType: 'MARKET',
+    });
   }
 
   async modifySL(symbol: string, positionId: string, newSL: number): Promise<BitunixResponse> {
@@ -151,16 +129,12 @@ export class BitunixAPI {
     const bodyStr = JSON.stringify(body);
     const sign = this.generateSignature(nonce, timestamp, '', bodyStr);
     const config = this.getConfig(nonce, timestamp, sign);
-
-    const response = await axios.post<BitunixResponse>(
-      `${this.baseUrl}/api/v1/futures/trade/modify_tpsl`,
-      body,
-      config
+    const res = await axios.post<BitunixResponse>(
+      `${this.baseUrl}/api/v1/futures/trade/modify_tpsl`, body, config
     );
-
-    if (response.data.code !== 0) {
-      throw new Error(`Bitunix API error: ${response.data.msg} (code: ${response.data.code})`);
+    if (res.data.code !== 0) {
+      throw new Error(`Bitunix API error: ${res.data.msg} (code: ${res.data.code})`);
     }
-    return response.data;
+    return res.data;
   }
 }
